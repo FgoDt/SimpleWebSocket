@@ -32,42 +32,84 @@
 #define SWSENOTCONN ENOTCONN
 #define SWSGetLastError() errno
 #define sws_socket_close close
-uint64_t sws_linux_time();
 #define sws_export 
 #endif 
 
 
 
-#define SWS_SSL
+#include <openssl/ssl.h>
+#include <openssl/err.h>
 
-#ifdef SWS_SSL
-    #include <openssl/ssl.h>
-    #include <openssl/err.h>
-#endif
+typedef struct SimpleWebSocket SimpleWebSocket;
 
-typedef void(*simple_websocket_frame_call)(struct SimpleWebSocket *sws,unsigned char* data, void *usr_data, int type);
+typedef enum SimpleWebSocketDataType SimpleWebSocketDataType;
 
-typedef struct SimpleWebSocket{
-    int state;
-    simple_websocket_frame_call call;
+typedef enum SimpleWebSocketState SimpleWebSocketState;
+
+typedef enum SimpleWebSocketType SimpleWebSocketType;
+
+typedef struct SimpleWebSocketIO
+{
+    int(*recv)(SimpleWebSocket *sws, void *data, size_t len, int flags);
+    int(*send)(SimpleWebSocket *sws, void *data, size_t len, int flags);
+    void(*message)(SimpleWebSocket *sws,void* data, size_t len, int type);
+}SimpleWebSocketIO;
+
+enum SimpleWebSocketDataType{
+    SWS_DATA_TYPE_CONTINUATION_FRAME,
+    SWS_DATA_TYPE_TEXT_FRAME,
+    SWS_DATA_TYPE_BINARY_FRAME,
+    SWS_DATA_TYPE_CONNECTION_CLOSE = 0x8,
+    SWS_DATA_TYPE_PING,
+    SWS_DATA_TYPE_PONG,
+};
+
+enum SimpleWebSocketState{
+    SWS_STATE_CONNECTING,
+    SWS_STATE_HANDSHAKE,
+    SWS_STATE_TRANSPORTING,
+    SWS_STATE_CLOSE,
+};
+
+enum SimpleWebSocketType{
+    SWS_TYPE_SERVER,
+    SWS_TYPE_CLIENT
+};
+
+
+struct SimpleWebSocket{
+    void* usr_data;
+
+    char* host;
+    int port;
+
+    //header
+    char* sec_ws_key;
+    char* sec_ws_accept;
+
+    SimpleWebSocketState state;
+    SimpleWebSocketType type;
+
+    //interface
+    SimpleWebSocketIO io;
+
+
     //client data
     sws_socket fd;
     int use_ssl;
-    #ifdef SWS_SSL
-        SSL_CTX *ssl_ctx;
-        SSL *ssl;
-    #endif
-}SimpleWebSocket;
+    SSL_CTX *ssl_ctx;
+    SSL *ssl;
+};
 
-SimpleWebSocket* simple_websocket_new();
+SimpleWebSocket* simple_websocket_create(SimpleWebSocketType type);
 
 void simple_websocket_destroy(SimpleWebSocket *sws);
 
 void simple_websocket_close(SimpleWebSocket *sws);
 
-void simple_websocket_recive_remote_data(SimpleWebSocket *sws, unsigned char* data, int len);
+int simple_websocket_recv(SimpleWebSocket*sws);
 
-void simple_websocket_send_local_data(SimpleWebSocket *sws, unsigned char* data, int len);
+int simple_websocket_send(SimpleWebSocket *sws, void *data, int len, int flags);
 
 /**
  * client function
@@ -79,31 +121,21 @@ void simple_websocket_send_local_data(SimpleWebSocket *sws, unsigned char* data,
  * @param ssl 1 for use ssl connect
  * @return socket fd error return INVALID_SOCKET
  **/
-sws_socket simple_websocket_connect(SimpleWebSocket *sws, const char* host, int port, int ssl);
+sws_socket simple_websocket_connect(SimpleWebSocket *sws, const char* host,
+                                                            int port, int ssl);
 
 /**
- * SimpleWebSocket Recv data from remote socket
- * @param sws SimpleWebSocket context
- * @param data recv data
- * @param len recv data can write length
- * @param flags recv function flag
- * @return data recv length
+ * client function
+ * SimpleWebSocket request handshake message to server
  **/
-int simple_websocket_recv(SimpleWebSocket *sws, unsigned char* data, int len, int flags);
+int simple_websocket_request_handshake(SimpleWebSocket *sws ,const char* path, 
+        const char* extra_header, const char* host, int ws_version);
 
 /**
- * SimpleWebSocket Send data to remote socket
- * @param sws SimpleWebSocket context
- * @param data send data
- * @param len send data can read length
- * @param flags send fucntion flag
- * @return data send length
+ * server function
+ * SimpleWebSocket response handshake message to client
  **/
-int simple_websocket_send(SimpleWebSocket *sws, unsigned char* data, int len, int flags);
-
-int simple_websocket_send_handshake_request(SimpleWebSocket *sws ,const char* path, 
-    const char* extra_header, const char* host, int ws_version, int flags);
-
-int simple_websocket_response_handshake(SimpleWebSocket *sws, const char* web_sec, const char* extra_header, int len);
+int simple_websocket_response_handshake(SimpleWebSocket *sws,
+                            const char* sec_ws_key, const char* extra_header);
 
 #endif
