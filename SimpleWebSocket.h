@@ -48,6 +48,10 @@ typedef enum SimpleWebSocketState SimpleWebSocketState;
 
 typedef enum SimpleWebSocketType SimpleWebSocketType;
 
+typedef struct SimpleWebSocketFrame SimpleWebSocketFrame;
+
+typedef enum SimpleWebSocketFrameStage SimpleWebSocketFrameStage;
+
 typedef struct SimpleWebSocketIO
 {
     int(*recv)(SimpleWebSocket *sws, void *data, size_t len, int flags);
@@ -86,6 +90,7 @@ struct SimpleWebSocket{
     //header
     char* sec_ws_key;
     char* sec_ws_accept;
+    char* remote_sec_ws_accept;
 
     SimpleWebSocketState state;
     SimpleWebSocketType type;
@@ -93,6 +98,9 @@ struct SimpleWebSocket{
     //interface
     SimpleWebSocketIO io;
 
+    //frame
+    SimpleWebSocketFrame *r_frame;//recv frame
+    SimpleWebSocketFrame *s_frame;//send frame
 
     //client data
     sws_socket fd;
@@ -109,7 +117,7 @@ void simple_websocket_close(SimpleWebSocket *sws);
 
 int simple_websocket_recv(SimpleWebSocket*sws);
 
-int simple_websocket_send(SimpleWebSocket *sws, void *data, int len, int flags);
+int simple_websocket_send(SimpleWebSocket *sws, void *data, int len);
 
 /**
  * client function

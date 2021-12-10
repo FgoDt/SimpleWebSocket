@@ -17,14 +17,30 @@ static const char* handshake_request_fmt_str =
 "%s"
 "\r\n";
 
-typedef struct SimpleWebSocketFrame SimpleWebSocketFrame;
+#define WS_MAX_HEADER_LEN 10
+
+
+enum SimpleWebSocketFrameStage{
+    SWS_FRAME_STAGE_RECV_HEADER,
+    SWS_FRAME_STAGE_PARSE_HEADER,
+    SWS_FRAME_STAGE_PARSE_MASK,
+    SWS_FRAME_STAGE_RECV_PAYLOAD,
+    SWS_FRAME_STAGE_PARSE_PAYLOAD,
+    SWS_FRAME_STAGE_SEND_HEADER,
+    SWS_FRAME_STAGE_SEND_PAYLOAD,
+    SWS_FRAME_STAGE_DONE,
+};
 
 struct SimpleWebSocketFrame{
     uint8_t FIN;
     uint8_t opcode;
     uint8_t MASK;
     uint64_t payload_len;
+    uint64_t rw_loc;
+    uint32_t header_len;
     uint8_t mask_key[4];
+    uint8_t header[WS_MAX_HEADER_LEN];
+    SimpleWebSocketFrameStage stage;
     void *payload;
 };
 
@@ -62,42 +78,436 @@ static void sws_client_dummy_io_msg_call(SimpleWebSocket *sws,
 
 #pragma region handshake
 
-static void sws_generate_sec_ws_key(char** key)
+static void sws_bytes_to_base64(char** str, const void *bytes, int len)
 {
     BIO *bmem, *b64;
     BUF_MEM *bbuf;
-    unsigned char buf[16];
-    RAND_bytes(buf, 16);
     b64 = BIO_new(BIO_f_base64());
     bmem = BIO_new(BIO_s_mem());
     b64 = BIO_push(b64, bmem);
     BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
-    BIO_write(b64, buf, 16);
+    BIO_write(b64, bytes, len);
     BIO_flush(b64);
     BIO_get_mem_ptr(b64, &bbuf);
-    *key = malloc(bbuf->length+1);
-    (*key)[bbuf->length] = 0;
-    memcpy((*key), bbuf->data, bbuf->length);
+    *str = malloc(bbuf->length+1);
+    (*str)[bbuf->length] = 0;
+    memcpy((*str), bbuf->data, bbuf->length);
     BIO_set_close(b64, BIO_NOCLOSE);
     BIO_free_all(b64);
     return;
 }
 
-static void sws_cal_sha1_then_base64(char* dst, char* src)
+static void sws_generate_sec_ws_key(char** key)
 {
-
+    unsigned char buf[16];
+    RAND_bytes(buf, 16);
+    sws_bytes_to_base64(key,buf, 16);
+    return;
 }
 
+static void sws_cal_sha1_then_base64(char** dst, char* src)
+{
+    unsigned char tmp[SHA_DIGEST_LENGTH] = {0};
+    SHA_CTX ctx;
+    SHA1_Init(&ctx);
+    SHA1_Update(&ctx, src, strlen(src));
+    SHA1_Update(&ctx, ws_magic_str, strlen(ws_magic_str));
+    SHA1_Final(tmp,&ctx);
+    sws_bytes_to_base64(dst, tmp, SHA_DIGEST_LENGTH);
+    return;
+}
+
+static int sws_get_http_header_key_val(char** key, char** val, char* line)
+{
+    char *tkey = NULL;
+    char *tval = NULL;
+    int key_len = 0;
+    int val_len = 0;
+    int parse_key = 1;
+    int len = strlen(line);
+    for(int i = 0; i < len; i++){
+        char c = line[i];
+        if(c == ':'){
+            parse_key = 0;
+            continue;
+        }
+        if(c == '\r' && i < len-1 && line[i+1] == '\n'){
+            break;
+        }
+        if(parse_key)
+        {
+            if(tkey == NULL)
+            {
+                tkey = line+i;
+            }
+            key_len++;
+        }else{
+            if(tval == NULL && c != ' '){
+                tval = line+i;
+            }
+            val_len++;
+        }
+    }
+    if(key_len <= 0 || val_len <= 0){
+        return -1;
+    }
+    *key = malloc(key_len+1);
+    *val = malloc(val_len+1);
+    (*key)[key_len] = 0;
+    (*val)[val_len] = 0;
+    memcpy(*key, tkey, key_len);
+    memcpy(*val, tval, val_len);
+    return 0;
+}
+
+static void sws_client_get_handshake_response(SimpleWebSocket *sws)
+{
+    int lrlnlrln_status = 0;
+    int header_len = 0;
+    int header_buf_max = 1400;
+    char *header = malloc(header_buf_max);
+    char *line = NULL;
+    while (lrlnlrln_status < 4)
+    {
+        int ret = sws->io.recv(sws, header+header_len, 1, 0);
+        if(ret < 0){
+            printf("read header error\n");
+            break;
+        }
+        if(line == NULL){
+            line = header + header_len;
+        }
+        switch (lrlnlrln_status)
+        {
+        case 0:
+            if(header[header_len] == '\r'){
+                lrlnlrln_status++;
+            }else{
+                lrlnlrln_status = 0;
+            }
+            break;
+        case 1:
+            if(header[header_len] == '\n'){
+                lrlnlrln_status++;
+                header[header_len] = 0;
+                char* key = NULL;
+                char* val = NULL;
+                int ret = sws_get_http_header_key_val(&key,&val, line);
+                if(ret >= 0)
+                {
+                    printf("%s:%s\n",key, val);
+                    if(!strcmp(key, "Sec-WebSocket-Accept"))
+                    {
+                        sws->remote_sec_ws_accept = val;
+                        free(key);
+                    }else{
+                        free(key);
+                        free(val);
+                    }
+                }
+                header[header_len] = '\n';
+                line = NULL;
+            }else{
+                lrlnlrln_status = 0;
+            }
+            break;
+        case 2:
+            if(header[header_len] == '\r'){
+                lrlnlrln_status++;
+            }else{
+                lrlnlrln_status = 0;
+            }
+            break;
+        case 3:
+            if(header[header_len] == '\n'){
+                lrlnlrln_status++;
+            }else{
+                lrlnlrln_status = 0;
+            }
+            break;
+        
+        default:
+            break;
+        }
+    
+        header_len ++;
+        if(header_len == header_buf_max){
+            header = realloc(header, header_buf_max + header_len);
+            header_buf_max += header_len;
+        }
+    }
+    header[header_len] = 0;
+    printf("\nresponse header:%s\n",header);
+    
+}
 
 static int sws_client_do_handshake(SimpleWebSocket *sws)
 {
     assert(sws != NULL);
     assert(sws->sec_ws_key != NULL);
+    int cal_str_len = strlen(sws->sec_ws_key) + strlen(ws_magic_str);
+    char* buf = malloc(cal_str_len+1);
+    buf[cal_str_len] = 0;
+    memcpy(buf, sws->sec_ws_key, strlen(sws->sec_ws_key));
+    memcpy(buf+strlen(sws->sec_ws_key),ws_magic_str, strlen(ws_magic_str));
+    printf("cal str:%s\n",buf);
+    sws_cal_sha1_then_base64(&sws->sec_ws_accept, sws->sec_ws_key);
+    free(buf);
+    sws_client_get_handshake_response(sws);
+    if(sws->remote_sec_ws_accept == NULL){
+        printf("can not find Sec-WebSocket-Accept\n");
+        return -1;
+    }
+    if(strcmp(sws->remote_sec_ws_accept, sws->sec_ws_accept) != 0){
+        return 0;
+    }else{
+        printf("handshake error bad Sec-WebSocket-Accept response\n");
+    }
 
-    
+    return -1;
 }
 
 #pragma endregion handshake
+
+#pragma region transport
+
+SimpleWebSocketFrame* sws_frame_alloc(void)
+{
+    SimpleWebSocketFrame *frame = malloc(sizeof(*frame));
+    if(frame == NULL){
+        return NULL;
+    }
+    memset(frame, 0, sizeof(*frame));
+    return frame;
+}
+
+void sws_frame_free(SimpleWebSocketFrame *f)
+{
+    if(!f){
+        return;
+    }
+    if(f->payload){
+        free(f->payload);
+    }
+    free(f);
+}
+
+static int sws_recv_and_parse_frame_header(SimpleWebSocket *sws,
+                                            SimpleWebSocketFrame *frame)
+{
+    int ret = 0;
+    int want ;
+    int header_loc = frame->rw_loc;
+    if(frame->payload_len == 0){
+        frame->header_len = 2;
+    }
+
+    want = frame->header_len - header_loc;
+
+    while (want > 0)
+    {
+        ret = sws->io.recv(sws, frame->header+header_loc, want, 0);
+        if(ret <= 0){
+            return ret;
+        }
+        want -= ret;
+        frame->rw_loc += ret;
+        //parse first 2 bytes
+        if(want == 0 && frame->payload_len == 0){
+            frame->FIN = (frame->header[0] >> 7) & 0x1;
+            frame->opcode = frame->header[0] & 0xf;
+            frame->MASK = (frame->header[1] >> 7) & 0x1;
+            frame->payload_len = (frame->header[1])&0x7f;
+            if(frame->MASK == 1){
+                want += 4;
+                frame->header_len += 4;
+            }
+            if(frame->payload_len == 126){
+                want += 2;
+                frame->header_len += 2;
+            }else if(frame->payload_len == 127){
+                want += 8;
+                frame->header_len += 8;
+            }
+        }
+    }
+
+    //parse extended payload length and mask key
+    int offset = 2;
+    uint64_t len = 0;
+    if(frame->payload_len == 126){
+        len = ((int)(frame->header[offset++]) << 8);
+        len += frame->header[offset++];
+        frame->payload_len = len;
+    }else if(frame->payload_len == 127){
+        len = ((uint64_t)(frame->header[offset++]) << 56);
+        len += ((uint64_t)(frame->header[offset++]) << 48);
+        len += ((uint64_t)(frame->header[offset++]) << 40);
+        len += ((uint64_t)(frame->header[offset++]) << 32);
+        len += ((uint64_t)(frame->header[offset++]) << 24);
+        len += ((uint64_t)(frame->header[offset++]) << 16);
+        len += ((uint64_t)(frame->header[offset++]) << 8);
+        len += ((uint64_t)(frame->header[offset++]));
+        frame->payload_len = len;
+    }
+
+    if(frame->MASK == 1){
+        frame->mask_key[0] = frame->header[offset++]; 
+        frame->mask_key[1] = frame->header[offset++]; 
+        frame->mask_key[2] = frame->header[offset++]; 
+        frame->mask_key[3] = frame->header[offset++]; 
+    }
+
+    return 0;
+    
+}
+
+static int sws_recv_and_parse_payload(SimpleWebSocket *sws, 
+                                        SimpleWebSocketFrame *frame)
+{
+    assert(sws != NULL);
+    assert(frame != NULL);
+    int ret;
+    if(frame->payload == NULL){
+        frame->payload = malloc(frame->payload_len);
+        frame->rw_loc = 0;
+    }
+    int want = frame->payload_len - frame->rw_loc;
+    while (want > 0)
+    {
+        ret = sws->io.recv(sws, frame->payload + frame->rw_loc, want, 0);
+        if(ret <= 0){
+            return ret;
+        }
+        want -= ret;
+        frame->rw_loc += ret;
+    }
+
+    if(frame->MASK){
+        for (uint64_t i = 0; i < frame->payload_len; i++)
+        {
+            int j = i % 4;
+            ((uint8_t*)(frame->payload))[i] = ((uint8_t*)frame->payload)[i] ^ frame->mask_key[j];
+        }
+    }
+    return 0;
+    
+}
+
+static int sws_get_piple_line(SimpleWebSocket *sws)
+{
+    int ret;
+    assert(sws != NULL);
+    assert(sws->r_frame != NULL);
+    SimpleWebSocketFrame *frame = sws->r_frame;
+    switch (frame->stage)
+    {
+    case SWS_FRAME_STAGE_PARSE_HEADER:
+        ret = sws_recv_and_parse_frame_header(sws, frame);
+        if(ret < 0){
+            return ret;
+        }
+        frame->stage++;
+        break;
+
+    case SWS_FRAME_STAGE_PARSE_MASK:
+        frame->stage++;
+        break;
+
+    case SWS_FRAME_STAGE_PARSE_PAYLOAD:
+        ret = sws_recv_and_parse_payload(sws, frame);
+        if(ret < 0){
+            return ret;
+        }
+        printf("%s\n",(char*)frame->payload);
+        frame->stage++;
+        break;
+    
+    default:
+        break;
+    }
+    return 0;
+}
+
+static int sws_send_parse_frame(SimpleWebSocket *sws, 
+                                SimpleWebSocketFrame *frame)
+{
+    //first 2 bytes
+    frame->header_len = 2;
+    if(frame->payload_len > 126 && frame->payload_len <= 0xffff){
+        frame->header_len += 2;
+    }else if(frame->payload_len > 0xffff){
+        frame->header_len += 8;
+    }
+    if(frame->MASK){
+        frame->header_len += 4;
+
+    }
+
+}
+
+static int sws_send_piple_line(SimpleWebSocket *sws)
+{
+    int ret;
+    assert(sws != NULL);
+    assert(sws->s_frame != NULL);
+    SimpleWebSocketFrame *frame = sws->s_frame;
+    switch (frame->stage)
+    {
+    case SWS_FRAME_STAGE_PARSE_HEADER:
+        ret = sws_recv_and_parse_frame_header(sws, frame);
+        if(ret < 0){
+            return ret;
+        }
+        frame->stage++;
+        break;
+
+    case SWS_FRAME_STAGE_PARSE_MASK:
+        frame->stage++;
+        break;
+
+    case SWS_FRAME_STAGE_PARSE_PAYLOAD:
+        ret = sws_recv_and_parse_payload(sws, frame);
+        if(ret < 0){
+            return ret;
+        }
+        printf("%s\n",(char*)frame->payload);
+        frame->stage++;
+        break;
+    
+    default:
+        break;
+    }
+    return 0;
+    return -1;
+}
+
+static int sws_get_frame(SimpleWebSocket *sws)
+{
+    if(sws->r_frame == NULL){
+        sws->r_frame = sws_frame_alloc();
+        //check again
+        if(sws->r_frame == NULL){
+            printf("alloc frame error may no mem\n");
+            return -1;
+        }
+    }
+    return sws_get_piple_line(sws);
+}
+
+static int sws_send_frame(SimpleWebSocket *sws)
+{
+    if(sws->s_frame == NULL){
+        sws->s_frame = sws_frame_alloc();
+        //check again
+        if(sws->s_frame == NULL){
+            printf("alloc frame error may no mem\n");
+            return -1;
+        }
+    }
+    return sws_send_piple_line(sws);
+}
+#pragma endregion transport
 
 SimpleWebSocket* simple_websocket_create(SimpleWebSocketType type)
 {
@@ -182,15 +592,40 @@ fail:
 
 int simple_websocket_recv(SimpleWebSocket *sws)
 {
+    int ret = 0;
     assert(sws != NULL);
-    //return sws->io.recv(sws)
-    return -1;
+    if(sws->state == SWS_STATE_HANDSHAKE)
+    {
+        if(sws->type == SWS_TYPE_CLIENT){
+            ret = sws_client_do_handshake(sws);
+            sws->state = SWS_STATE_TRANSPORTING;
+        }else{
+            printf("need upgrade first\n");
+            return -1;
+        }
+       if(ret < 0){
+           printf("sws handshake error\n");
+            sws->state = SWS_STATE_CLOSE;
+           return ret;
+       }
+
+       return 0;
+    }else if(sws->state == SWS_STATE_TRANSPORTING){
+        return sws_get_frame(sws);
+    }else{
+        printf("sws recv error, in stage : %d\n",sws->state);
+        return -1;
+    }
 }
 
-int simple_websocket_send(SimpleWebSocket *sws, void *data, int len, int flags)
+int simple_websocket_send(SimpleWebSocket *sws, void *data, int len)
 {
     assert(sws != NULL);
-    return sws->io.send(sws, data, len, flags);
+    if(sws->state != SWS_STATE_TRANSPORTING){
+        printf("bad stage in send function\n");
+        return -1;
+    }
+    return sws_send_frame(sws);
 }
 
 int simple_websocket_request_handshake(SimpleWebSocket *sws ,
@@ -198,14 +633,16 @@ int simple_websocket_request_handshake(SimpleWebSocket *sws ,
     int ws_version)
 {
     assert(sws != NULL);
+    sws->state = SWS_STATE_HANDSHAKE;
+    //sws_client_do_handshake(sws);
+    sws_generate_sec_ws_key(&sws->sec_ws_key);
     //make sure enought space to format data
     int msg_total_len = strlen(handshake_request_fmt_str) + strlen(path) 
     + strlen(host) + strlen(extra_header) + 100;
     char *data = malloc(msg_total_len);
     memset(data, 0, msg_total_len);
     int ret = sprintf(data, handshake_request_fmt_str, path, host, 
-                        "abcdef",ws_version,extra_header);
-    printf("request:\n%s\n", data);
-    simple_websocket_send(sws, (void*)data,ret, 0);
+                        sws->sec_ws_key,ws_version,extra_header);
+    sws->io.send(sws, data, ret, 0);
     return -1;
 }
