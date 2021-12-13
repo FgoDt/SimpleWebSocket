@@ -23,10 +23,14 @@ static const char* handshake_request_fmt_str =
 enum SimpleWebSocketFrameStage{
     SWS_FRAME_STAGE_RECV_HEADER,
     SWS_FRAME_STAGE_PARSE_HEADER,
+    SWS_FRAME_STAGE_RECV_EXTRA_LEN,
+    SWS_FRAME_STAGE_PARSE_EXTRA_LEN,
+    SWS_FRAME_STAGE_RECV_MASK,
     SWS_FRAME_STAGE_PARSE_MASK,
     SWS_FRAME_STAGE_RECV_PAYLOAD,
     SWS_FRAME_STAGE_PARSE_PAYLOAD,
     SWS_FRAME_STAGE_SEND_HEADER,
+    SWS_FRAME_STAGE_SEND_MASK,
     SWS_FRAME_STAGE_SEND_PAYLOAD,
     SWS_FRAME_STAGE_DONE,
 };
@@ -38,10 +42,11 @@ struct SimpleWebSocketFrame{
     uint64_t payload_len;
     uint64_t rw_loc;
     uint32_t header_len;
-    uint8_t mask_key[4];
     uint8_t header[WS_MAX_HEADER_LEN];
+    uint8_t mask_key[4];
     SimpleWebSocketFrameStage stage;
     void *payload;
+    int need_free_payload;
 };
 
 #pragma region dummy io
@@ -286,112 +291,66 @@ void sws_frame_free(SimpleWebSocketFrame *f)
     if(!f){
         return;
     }
-    if(f->payload){
+    if(f->payload && f->need_free_payload == 1){
         free(f->payload);
     }
     free(f);
 }
 
-static int sws_recv_and_parse_frame_header(SimpleWebSocket *sws,
-                                            SimpleWebSocketFrame *frame)
-{
-    int ret = 0;
-    int want ;
-    int header_loc = frame->rw_loc;
-    if(frame->payload_len == 0){
-        frame->header_len = 2;
-    }
-
-    want = frame->header_len - header_loc;
-
-    while (want > 0)
-    {
-        ret = sws->io.recv(sws, frame->header+header_loc, want, 0);
-        if(ret <= 0){
-            return ret;
-        }
-        want -= ret;
-        frame->rw_loc += ret;
-        //parse first 2 bytes
-        if(want == 0 && frame->payload_len == 0){
-            frame->FIN = (frame->header[0] >> 7) & 0x1;
-            frame->opcode = frame->header[0] & 0xf;
-            frame->MASK = (frame->header[1] >> 7) & 0x1;
-            frame->payload_len = (frame->header[1])&0x7f;
-            if(frame->MASK == 1){
-                want += 4;
-                frame->header_len += 4;
-            }
-            if(frame->payload_len == 126){
-                want += 2;
-                frame->header_len += 2;
-            }else if(frame->payload_len == 127){
-                want += 8;
-                frame->header_len += 8;
-            }
-        }
-    }
-
-    //parse extended payload length and mask key
-    int offset = 2;
-    uint64_t len = 0;
-    if(frame->payload_len == 126){
-        len = ((int)(frame->header[offset++]) << 8);
-        len += frame->header[offset++];
-        frame->payload_len = len;
-    }else if(frame->payload_len == 127){
-        len = ((uint64_t)(frame->header[offset++]) << 56);
-        len += ((uint64_t)(frame->header[offset++]) << 48);
-        len += ((uint64_t)(frame->header[offset++]) << 40);
-        len += ((uint64_t)(frame->header[offset++]) << 32);
-        len += ((uint64_t)(frame->header[offset++]) << 24);
-        len += ((uint64_t)(frame->header[offset++]) << 16);
-        len += ((uint64_t)(frame->header[offset++]) << 8);
-        len += ((uint64_t)(frame->header[offset++]));
-        frame->payload_len = len;
-    }
-
-    if(frame->MASK == 1){
-        frame->mask_key[0] = frame->header[offset++]; 
-        frame->mask_key[1] = frame->header[offset++]; 
-        frame->mask_key[2] = frame->header[offset++]; 
-        frame->mask_key[3] = frame->header[offset++]; 
-    }
-
-    return 0;
-    
-}
-
-static int sws_recv_and_parse_payload(SimpleWebSocket *sws, 
+static int sws_recv_frame_basic_header(SimpleWebSocket* sws, 
                                         SimpleWebSocketFrame *frame)
 {
-    assert(sws != NULL);
-    assert(frame != NULL);
-    int ret;
-    if(frame->payload == NULL){
-        frame->payload = malloc(frame->payload_len);
-        frame->rw_loc = 0;
+    int want = 2 - frame->rw_loc;
+    int ret = sws->io.recv(sws, frame->header + frame->rw_loc, want, 0);
+    if(ret <= 0){
+        return ret;
     }
-    int want = frame->payload_len - frame->rw_loc;
-    while (want > 0)
+    frame->rw_loc += ret;
+    return ret;
+}
+
+static int sws_recv_frame_mask(SimpleWebSocket* sws, 
+                                        SimpleWebSocketFrame *frame)
+{
+    int want = 4 - frame->rw_loc;
+    int ret = sws->io.recv(sws, frame->mask_key + frame->rw_loc, want, 0);
+    if(ret <= 0){
+        return ret;
+    }
+    frame->rw_loc += ret;
+    return ret;
+}
+
+static int sws_recv_frame_payload(SimpleWebSocket *sws,
+                                        SimpleWebSocketFrame *frame)
+{
+    if(frame->payload == NULL)
     {
-        ret = sws->io.recv(sws, frame->payload + frame->rw_loc, want, 0);
-        if(ret <= 0){
-            return ret;
-        }
-        want -= ret;
-        frame->rw_loc += ret;
+        frame->payload = malloc(frame->payload_len);
+        frame->need_free_payload = 1;
     }
 
-    if(frame->MASK){
-        for (uint64_t i = 0; i < frame->payload_len; i++)
-        {
-            int j = i % 4;
-            ((uint8_t*)(frame->payload))[i] = ((uint8_t*)frame->payload)[i] ^ frame->mask_key[j];
-        }
+    int want = frame->payload_len - frame->rw_loc;
+    int ret = sws->io.recv(sws, frame->payload + frame->rw_loc, want, 0);
+    if(ret <= 0){
+        return ret;
     }
-    return 0;
-    
+    frame->rw_loc += ret;
+    return ret;
+}
+
+static void sws_recv_parse_payload(SimpleWebSocket* sws, 
+                                        SimpleWebSocketFrame *frame)
+{
+    if(1 != frame->MASK){
+        return;
+    }
+    for (uint64_t i = 0; i < frame->payload_len; i++)
+    {
+        int j = i % 4;
+        ((uint8_t*)(frame->payload))[i] = 
+                    ((uint8_t*)frame->payload)[i] ^ frame->mask_key[j];
+    }
 }
 
 static int sws_get_piple_line(SimpleWebSocket *sws)
@@ -400,50 +359,178 @@ static int sws_get_piple_line(SimpleWebSocket *sws)
     assert(sws != NULL);
     assert(sws->r_frame != NULL);
     SimpleWebSocketFrame *frame = sws->r_frame;
-    switch (frame->stage)
+    while (1)
     {
-    case SWS_FRAME_STAGE_PARSE_HEADER:
-        ret = sws_recv_and_parse_frame_header(sws, frame);
-        if(ret < 0){
-            return ret;
+        switch (frame->stage)
+        {
+        case SWS_FRAME_STAGE_RECV_HEADER:
+        {
+            ret = sws_recv_frame_basic_header(sws, frame);
+            if(ret <= 0){
+                return ret;
+            }
+            if(frame->rw_loc < 2){
+                return ret;
+            }
+            frame->rw_loc = 0;
+            frame->stage++;
         }
-        frame->stage++;
-        break;
-
-    case SWS_FRAME_STAGE_PARSE_MASK:
-        frame->stage++;
-        break;
-
-    case SWS_FRAME_STAGE_PARSE_PAYLOAD:
-        ret = sws_recv_and_parse_payload(sws, frame);
-        if(ret < 0){
-            return ret;
+            break;
+        case SWS_FRAME_STAGE_PARSE_HEADER:
+        {
+            frame->FIN = (frame->header[0] >> 7) & 0x1;
+            frame->opcode = frame->header[0] & 0xf;
+            frame->MASK = (frame->header[1] >> 7) & 0x1;
+            frame->payload_len = (frame->header[1])&0x7f;
+            if(frame->MASK == 1){
+                frame->header_len += 4;
+            }
+            if(frame->payload_len == 126){
+                frame->header_len += 2;
+                //reset rw_loc we want more data in header
+                frame->rw_loc = 2;
+            }else if(frame->payload_len == 127){
+                frame->header_len += 8;
+                //reset rw_loc we want more data in header
+                frame->rw_loc = 2;
+            }
+            frame->stage++;
         }
-        printf("%s\n",(char*)frame->payload);
-        frame->stage++;
-        break;
-    
-    default:
-        break;
+            break;
+        case SWS_FRAME_STAGE_RECV_EXTRA_LEN:
+        { 
+            if(frame->payload_len == 126 || frame->payload_len == 127){
+                ret = sws_recv_frame_basic_header(sws, frame);
+                if(ret <= 0){
+                    return ret;
+                }
+                if(frame->rw_loc < frame->header_len){
+                    return ret;
+                }
+            }
+            frame->rw_loc = 0;
+            frame->stage++;
+        }
+            break;
+        case SWS_FRAME_STAGE_PARSE_EXTRA_LEN:
+        {
+            int offset = 2;
+            uint64_t len = 0;
+            if(frame->payload_len == 126){
+                len = ((int)(frame->header[offset++]) << 8);
+                len += frame->header[offset++];
+                frame->payload_len = len;
+            }else if(frame->payload_len == 127){
+                len = ((uint64_t)(frame->header[offset++]) << 56);
+                len += ((uint64_t)(frame->header[offset++]) << 48);
+                len += ((uint64_t)(frame->header[offset++]) << 40);
+                len += ((uint64_t)(frame->header[offset++]) << 32);
+                len += ((uint64_t)(frame->header[offset++]) << 24);
+                len += ((uint64_t)(frame->header[offset++]) << 16);
+                len += ((uint64_t)(frame->header[offset++]) << 8);
+                len += ((uint64_t)(frame->header[offset++]));
+                frame->payload_len = len;
+            }
+            frame->rw_loc = 0;
+            frame->stage++;
+        }
+            break;
+        case SWS_FRAME_STAGE_RECV_MASK:
+        {
+            if(frame->MASK){
+                ret = sws_recv_frame_mask(sws, frame);
+                if(ret <= 0){
+                    return ret;
+                }
+                if(frame->rw_loc < 4){
+                    return ret;
+                }
+            }
+            frame->rw_loc = 0;
+            frame->stage++;
+        }
+            break;
+        case SWS_FRAME_STAGE_PARSE_MASK:
+            frame->stage++;
+            break;
+        case SWS_FRAME_STAGE_RECV_PAYLOAD:
+        {
+            ret = sws_recv_frame_payload(sws, frame);
+            if(ret <= 0){
+                return ret;
+            }
+            if(frame->rw_loc < frame->payload_len){
+                return ret;
+            }
+            frame->rw_loc = 0;
+            frame->stage++;
+        }
+            break;
+        case SWS_FRAME_STAGE_PARSE_PAYLOAD:
+        {
+            sws_recv_parse_payload(sws, frame);
+            sws->io.message(sws, frame->payload, frame->payload_len, frame->opcode);
+            frame->rw_loc = 0;
+            frame->stage++;
+            break;
+        }
+
+        case SWS_FRAME_STAGE_SEND_HEADER:
+            frame->stage++;
+            break;
+        case SWS_FRAME_STAGE_SEND_MASK:
+            frame->stage++;
+            break;
+        case SWS_FRAME_STAGE_SEND_PAYLOAD:
+            frame->stage++;
+            break;
+        case SWS_FRAME_STAGE_DONE:
+            frame->stage++;
+            uint64_t ret = frame->payload_len;
+            sws_frame_free(frame);
+            sws->r_frame = NULL;
+            return ret;
+        default:
+            frame->stage++;
+            return -1;
+        }
     }
-    return 0;
 }
 
-static int sws_send_parse_frame(SimpleWebSocket *sws, 
+static int sws_send_frame_header(SimpleWebSocket *sws, 
                                 SimpleWebSocketFrame *frame)
 {
-    //first 2 bytes
-    frame->header_len = 2;
-    if(frame->payload_len > 126 && frame->payload_len <= 0xffff){
-        frame->header_len += 2;
-    }else if(frame->payload_len > 0xffff){
-        frame->header_len += 8;
+    int want = frame->header_len - frame->rw_loc;
+    int ret = sws->io.send(sws, frame->header + frame->rw_loc, want, 0);
+    if(ret <= 0){
+        return ret;
     }
-    if(frame->MASK){
-        frame->header_len += 4;
+    frame->rw_loc += ret;
+    return ret;
+}
 
+static int sws_send_frame_mask(SimpleWebSocket *sws, 
+                                SimpleWebSocketFrame* frame)
+{
+    int want =  4 - frame->rw_loc;
+    int ret = sws->io.send(sws, frame->mask_key + frame->rw_loc, want, 0);
+    if(ret <= 0){
+        return ret;
     }
+    frame->rw_loc += ret;
+    return ret;
+}
 
+static int sws_send_frame_payload(SimpleWebSocket *sws,
+                                    SimpleWebSocketFrame *frame)
+{
+    int want = frame->payload_len - frame->rw_loc;
+    int ret = sws->io.send(sws, frame->payload + frame->rw_loc, want, 0);
+    if(ret <= 0){
+        return ret;
+    }
+    frame->rw_loc += ret;
+    return ret;
 }
 
 static int sws_send_piple_line(SimpleWebSocket *sws)
@@ -452,34 +539,134 @@ static int sws_send_piple_line(SimpleWebSocket *sws)
     assert(sws != NULL);
     assert(sws->s_frame != NULL);
     SimpleWebSocketFrame *frame = sws->s_frame;
-    switch (frame->stage)
+    while (1)
     {
-    case SWS_FRAME_STAGE_PARSE_HEADER:
-        ret = sws_recv_and_parse_frame_header(sws, frame);
-        if(ret < 0){
-            return ret;
-        }
-        frame->stage++;
-        break;
+        switch (frame->stage)
+        {
 
-    case SWS_FRAME_STAGE_PARSE_MASK:
-        frame->stage++;
-        break;
-
-    case SWS_FRAME_STAGE_PARSE_PAYLOAD:
-        ret = sws_recv_and_parse_payload(sws, frame);
-        if(ret < 0){
-            return ret;
+        case SWS_FRAME_STAGE_RECV_HEADER:
+            frame->stage++;
+            break;
+        case SWS_FRAME_STAGE_PARSE_HEADER:
+        {
+            //our lib always send fin frame
+            int offset = 0;
+            uint8_t fin_opcode = (1 << 7);
+            fin_opcode |= frame->opcode & 0xf;
+            frame->header[offset++] = fin_opcode;
+            uint8_t mask_len = frame->MASK == 1 ? (frame->MASK << 7) : 0;
+            if(frame->payload_len < 126){
+                mask_len |= frame->payload_len;
+                frame->header[offset++] = mask_len;
+            }else if (frame->payload_len <= 0xffff){
+                mask_len = 126;
+                frame->header[offset++] = mask_len;
+                frame->header[offset++] = (frame->payload_len >> 8) & 0xff;
+                frame->header[offset++] = (frame->payload_len >> 0) & 0xff;
+            }else if (frame->payload_len <= 0xffffffffffffffff ){
+                mask_len = 127;
+                frame->header[offset++] = mask_len;
+                frame->header[offset++] = (frame->payload_len >> 56) & 0xff;
+                frame->header[offset++] = (frame->payload_len >> 48) & 0xff;
+                frame->header[offset++] = (frame->payload_len >> 40) & 0xff;
+                frame->header[offset++] = (frame->payload_len >> 32) & 0xff;
+                frame->header[offset++] = (frame->payload_len >> 24) & 0xff;
+                frame->header[offset++] = (frame->payload_len >> 16) & 0xff;
+                frame->header[offset++] = (frame->payload_len >> 8) & 0xff;
+                frame->header[offset++] = (frame->payload_len >> 0) & 0xff;
+            }
+            frame->rw_loc = offset;
+            frame->header_len = offset;
+            frame->stage++;
         }
-        printf("%s\n",(char*)frame->payload);
-        frame->stage++;
-        break;
-    
-    default:
-        break;
+            break;
+        case SWS_FRAME_STAGE_RECV_EXTRA_LEN:
+            frame->stage++;
+            break;
+        case SWS_FRAME_STAGE_PARSE_EXTRA_LEN:
+            frame->stage++;
+            break;
+        case SWS_FRAME_STAGE_RECV_MASK:
+            frame->stage++;
+            break;
+        case SWS_FRAME_STAGE_PARSE_MASK:
+        {
+            if(frame->MASK == 1){
+                RAND_bytes(frame->mask_key,4);
+            }
+            frame->stage++;
+        }
+            break;
+        case SWS_FRAME_STAGE_RECV_PAYLOAD:
+               frame->stage++;
+            break;
+        case SWS_FRAME_STAGE_PARSE_PAYLOAD:
+        {
+            if(frame->MASK){
+                for (size_t i = 0; i < frame->payload_len; i++)
+                {
+                    uint8_t key = frame->mask_key[i%4];
+                    ((uint8_t*)(frame->payload))[i] =  
+                                        ((uint8_t*)frame->payload)[i] ^ key;
+                }
+            }
+            frame->stage++;
+            //reset rw_loc
+            frame->rw_loc = 0;
+        }
+            break;
+        case SWS_FRAME_STAGE_SEND_HEADER:
+        {
+            ret = sws_send_frame_header(sws, frame);
+            if(ret <= 0){
+                return ret;
+            }else if(frame->rw_loc < frame->header_len){
+                return ret;
+            }
+            frame->stage++;
+            //reset rw_loc
+            frame->rw_loc = 0;
+        }
+            break;
+        case SWS_FRAME_STAGE_SEND_MASK:
+        {
+            if(frame->MASK){
+                ret = sws_send_frame_mask(sws, frame);
+                if(ret <= 0){
+                    return ret;
+                }
+                if(frame->rw_loc < 4){
+                    return ret;
+                }
+            }
+            frame->stage++;
+            frame->rw_loc = 0;
+        }
+            break;
+        case SWS_FRAME_STAGE_SEND_PAYLOAD:
+        {
+            ret = sws_send_frame_payload(sws, frame);
+            if(ret <= 0){
+                return ret;
+            }
+            if(frame->rw_loc < frame->payload_len){
+                return ret;
+            }
+            frame->stage++;
+            frame->rw_loc = 0;
+            break;
+        }
+        case SWS_FRAME_STAGE_DONE:
+            frame->stage++;
+            uint64_t len = frame->payload_len;
+            sws_frame_free(frame);
+            sws->s_frame = NULL;
+        return len;
+        default:
+            frame->stage++;
+            break;
+        }
     }
-    return 0;
-    return -1;
 }
 
 static int sws_get_frame(SimpleWebSocket *sws)
@@ -495,7 +682,8 @@ static int sws_get_frame(SimpleWebSocket *sws)
     return sws_get_piple_line(sws);
 }
 
-static int sws_send_frame(SimpleWebSocket *sws)
+static int sws_send_frame(SimpleWebSocket *sws, void *data, int len, 
+                                                SimpleWebSocketDataType type)
 {
     if(sws->s_frame == NULL){
         sws->s_frame = sws_frame_alloc();
@@ -504,6 +692,13 @@ static int sws_send_frame(SimpleWebSocket *sws)
             printf("alloc frame error may no mem\n");
             return -1;
         }
+        sws->s_frame->MASK = 1;
+    }
+    if(sws->s_frame->payload == NULL){
+        sws->s_frame->payload = data;
+        sws->s_frame->payload_len = len;
+        sws->s_frame->opcode = type;
+        sws->s_frame->need_free_payload = 0;
     }
     return sws_send_piple_line(sws);
 }
@@ -524,7 +719,9 @@ int simple_websocket_connect(SimpleWebSocket *sws,
     assert(sws!=NULL);
     int ret = 0;
 
-    sws->io.message = sws_client_dummy_io_msg_call;
+    if(sws->io.message == NULL){
+        sws->io.message = sws_client_dummy_io_msg_call;
+    }
     sws->io.recv = sws_client_dummy_io_recv;
     sws->io.send = sws_client_dummy_io_send;
 
@@ -618,14 +815,15 @@ int simple_websocket_recv(SimpleWebSocket *sws)
     }
 }
 
-int simple_websocket_send(SimpleWebSocket *sws, void *data, int len)
+int simple_websocket_send(SimpleWebSocket *sws, void *data, int len,
+                                                SimpleWebSocketDataType type)
 {
     assert(sws != NULL);
     if(sws->state != SWS_STATE_TRANSPORTING){
         printf("bad stage in send function\n");
         return -1;
     }
-    return sws_send_frame(sws);
+    return sws_send_frame(sws, data, len, type);
 }
 
 int simple_websocket_request_handshake(SimpleWebSocket *sws ,

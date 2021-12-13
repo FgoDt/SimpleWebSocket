@@ -3,10 +3,16 @@
 
 static int stop = 0;
 
+static int count = 0;
 static void sws_client_dummy_io_msg_call(SimpleWebSocket *sws,
                         void *data, size_t len, int type)
 {
     printf("recv mssage %s\n", (char*)data);
+	char buf[1024] = {0};
+	int ret = sprintf(buf,"hello client send data num: %d\n",count);
+	simple_websocket_send(sws, buf, ret, SWS_DATA_TYPE_TEXT_FRAME);
+	printf("send func done\n");
+	count ++;
 }
 
 int main(){
@@ -26,6 +32,8 @@ int main(){
 			stop = 1;
 			printf("recv mssage error\n");
 		}
+		printf("retry\n");
+		usleep(1000*10);
 	}
 	
 

@@ -117,7 +117,8 @@ void simple_websocket_close(SimpleWebSocket *sws);
 
 int simple_websocket_recv(SimpleWebSocket*sws);
 
-int simple_websocket_send(SimpleWebSocket *sws, void *data, int len);
+int simple_websocket_send(SimpleWebSocket *sws, void *data, int len, 
+                                                SimpleWebSocketDataType type);
 
 /**
  * client function
