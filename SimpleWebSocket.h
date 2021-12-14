@@ -44,6 +44,8 @@ typedef struct SimpleWebSocket SimpleWebSocket;
 
 typedef struct SimpleWebSocketFrame SimpleWebSocketFrame;
 
+typedef void(*sws_base64_enc_func)(char**out, void* in, int len);
+
 typedef struct SimpleWebSocketIO
 {
     int(*recv)(SimpleWebSocket *sws, void *data, size_t len, int flags);
@@ -95,9 +97,6 @@ typedef enum SimpleWebSocketDataType SimpleWebSocketDataType;
 typedef enum SimpleWebSocketState SimpleWebSocketState;
 
 typedef enum SimpleWebSocketType SimpleWebSocketType;
-
-
-
 
 struct SimpleWebSocket{
     void* usr_data;
@@ -166,5 +165,8 @@ int simple_websocket_get_handshake_response(SimpleWebSocket *sws);
  **/
 int simple_websocket_response_handshake(SimpleWebSocket *sws,
                             const char* sec_ws_key, const char* extra_header);
+
+
+void simple_websocket_set_custom_base64_func(sws_base64_enc_func func);
 
 #endif

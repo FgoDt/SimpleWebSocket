@@ -7,6 +7,8 @@
 
 static const char* ws_magic_str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
+static sws_base64_enc_func sws_custom_base64_func = NULL;
+
 static const char* handshake_request_fmt_str = 
 "GET %s HTTP/1.1\r\n"
 "Host: %s\r\n"
@@ -68,6 +70,8 @@ static void sws_client_dummy_io_msg_call(SimpleWebSocket *sws,
 
 #pragma region handshake
 
+#ifdef SWS_CUSTOM_BASE64
+#else
 static void sws_bytes_to_base64(char** str, const void *bytes, int len)
 {
     BIO *bmem, *b64;
@@ -86,12 +90,17 @@ static void sws_bytes_to_base64(char** str, const void *bytes, int len)
     BIO_free_all(b64);
     return;
 }
+#endif
 
 static void sws_generate_sec_ws_key(char** key)
 {
     unsigned char buf[16];
     RAND_bytes(buf, 16);
-    sws_bytes_to_base64(key,buf, 16);
+    #ifdef SWS_CUSTOM_BASE64
+        sws_custom_base64_func(key, buf, 16);
+    #else
+        sws_bytes_to_base64(key,buf, 16);
+    #endif
     return;
 }
 
@@ -103,7 +112,12 @@ static void sws_cal_sha1_then_base64(char** dst, char* src)
     SHA1_Update(&ctx, src, strlen(src));
     SHA1_Update(&ctx, ws_magic_str, strlen(ws_magic_str));
     SHA1_Final(tmp,&ctx);
-    sws_bytes_to_base64(dst, tmp, SHA_DIGEST_LENGTH);
+     #ifdef SWS_CUSTOM_BASE64
+        sws_custom_base64_func(dst, src, 16);
+    #else
+        sws_bytes_to_base64(dst, src, 16);
+    #endif
+    
     return;
 }
 
@@ -542,15 +556,17 @@ static int sws_send_piple_line(SimpleWebSocket *sws)
             frame->header[offset++] = fin_opcode;
             uint8_t mask_len = frame->MASK == 1 ? (frame->MASK << 7) : 0;
             if(frame->payload_len < 126){
-                mask_len |= frame->payload_len;
+                mask_len |= frame->payload_len&0x7f;
                 frame->header[offset++] = mask_len;
             }else if (frame->payload_len <= 0xffff){
-                mask_len = 126;
+                //mask_len = 126;
+                mask_len |= 126&0x7f;
                 frame->header[offset++] = mask_len;
                 frame->header[offset++] = (frame->payload_len >> 8) & 0xff;
                 frame->header[offset++] = (frame->payload_len >> 0) & 0xff;
             }else if (frame->payload_len <= 0xffffffffffffffff ){
-                mask_len = 127;
+                //mask_len = 127;
+                mask_len |= 127&0x7f;
                 frame->header[offset++] = mask_len;
                 frame->header[offset++] = (frame->payload_len >> 56) & 0xff;
                 frame->header[offset++] = (frame->payload_len >> 48) & 0xff;
@@ -871,4 +887,9 @@ void simple_websocket_destroy(SimpleWebSocket *sws)
         }
     }
     free(sws);
+}
+
+void simple_websocket_set_custom_base64_func(sws_base64_enc_func func)
+{
+    sws_custom_base64_func = func;
 }
