@@ -267,6 +267,8 @@ SimpleWebSocketFrame* sws_frame_alloc(void)
         return NULL;
     }
     memset(frame, 0, sizeof(*frame));
+    //basic header len
+    frame->header_len = 2;
     return frame;
 }
 
@@ -284,7 +286,7 @@ void sws_frame_free(SimpleWebSocketFrame *f)
 static int sws_recv_frame_basic_header(SimpleWebSocket* sws, 
                                         SimpleWebSocketFrame *frame)
 {
-    int want = 2 - frame->rw_loc;
+    int want = frame->header_len - frame->rw_loc;
     int ret = sws->io.recv(sws, frame->header + frame->rw_loc, want, 0);
     if(ret <= 0){
         return ret;
@@ -741,6 +743,7 @@ int simple_websocket_connect(SimpleWebSocket *sws,
 	}
 
     if(ssl == 1){
+        sws->use_ssl = 1;
         SSL_library_init();
         SSLeay_add_ssl_algorithms();
         SSL_load_error_strings();
@@ -778,25 +781,9 @@ fail:
 
 int simple_websocket_recv(SimpleWebSocket *sws)
 {
-    int ret = 0;
     assert(sws != NULL);
-    if(sws->state == SWS_STATE_HANDSHAKE)
-    {
-        if(sws->type == SWS_TYPE_CLIENT){
-            ret = sws_client_do_handshake(sws);
-            sws->state = SWS_STATE_TRANSPORTING;
-        }else{
-            printf("need upgrade first\n");
-            return -1;
-        }
-       if(ret < 0){
-           printf("sws handshake error\n");
-            sws->state = SWS_STATE_CLOSE;
-           return ret;
-       }
 
-       return 0;
-    }else if(sws->state == SWS_STATE_TRANSPORTING){
+    if(sws->state == SWS_STATE_TRANSPORTING){
         return sws_get_frame(sws);
     }else{
         printf("sws recv error, in stage : %d\n",sws->state);
@@ -831,6 +818,29 @@ int simple_websocket_request_handshake(SimpleWebSocket *sws ,
     int ret = sprintf(data, handshake_request_fmt_str, path, host, 
                         sws->sec_ws_key,ws_version,extra_header);
     return sws->io.send(sws, data, ret, 0);
+}
+
+int simple_websocket_get_handshake_response(SimpleWebSocket *sws)
+{
+    int ret = 0;
+    assert(sws != NULL);
+    if(sws->state == SWS_STATE_HANDSHAKE)
+    {
+        if(sws->type == SWS_TYPE_CLIENT){
+            ret = sws_client_do_handshake(sws);
+            sws->state = SWS_STATE_TRANSPORTING;
+        }else{
+            printf("need upgrade first\n");
+            return -1;
+        }
+       if(ret < 0){
+           printf("sws handshake error\n");
+            sws->state = SWS_STATE_CLOSE;
+           return ret;
+       }
+       return 0;
+    }
+    return -1;
 }
 
 void simple_websocket_destroy(SimpleWebSocket *sws)

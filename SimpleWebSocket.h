@@ -158,6 +158,8 @@ sws_socket simple_websocket_connect(SimpleWebSocket *sws, const char* host,
 int simple_websocket_request_handshake(SimpleWebSocket *sws ,const char* path, 
         const char* extra_header, const char* host, int ws_version);
 
+int simple_websocket_get_handshake_response(SimpleWebSocket *sws);
+
 /**
  * server function
  * SimpleWebSocket response handshake message to client

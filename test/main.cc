@@ -1,5 +1,8 @@
-#include "../SimpleWebSocket.h"
+#include "rtc_base/strings/json.h"
 #include <stdio.h>
+extern "C"{
+	#include "../SimpleWebSocket.h"
+}
 
 static int stop = 0;
 
@@ -11,13 +14,7 @@ static void sws_client_dummy_io_msg_call(SimpleWebSocket *sws,
 	count ++;
 }
 
-static int my_send_function(SimpleWebSocket *sws){
-	int ret;
-	char buf[1024] = {0};
-	ret = sprintf(buf,"hello client send data num: %d\n",count);
-	ret = simple_websocket_send(sws, buf, ret, SWS_DATA_TYPE_TEXT_FRAME);
-	return ret;
-}
+
 
 int main(){
 	SimpleWebSocket *sws = simple_websocket_create(SWS_TYPE_CLIENT);
@@ -25,7 +22,6 @@ int main(){
 	sws_socket fd = simple_websocket_connect(sws, "rtc.studease.cn", 443, 1 );
 	if(fd == SWS_INVALID_SOCKET){
 		printf("connect error\n");
-		goto done;
 	}
 
 	int ret = simple_websocket_request_handshake(sws, "/rtc/sig", 
@@ -33,11 +29,27 @@ int main(){
 	
 	if(ret < 0){
 		printf("send handshake request error\n");
-		goto done;
 	}
 
 
-
+    Json::StyledWriter writer;
+    Json::Value jmessage;
+    jmessage["type"] = "connect";
+    jmessage["chan"] = 0;
+    jmessage["sn"] = 0;
+    Json::Value data;
+    data["token"] = "";
+    jmessage["data"] = data;
+    auto connect = writer.write(jmessage);
+	printf("send data: %s\n",connect.c_str());
+	ret = simple_websocket_get_handshake_response(sws);
+		
+	ret = simple_websocket_send(sws, (void*)connect.c_str(), connect.length(), SWS_DATA_TYPE_TEXT_FRAME);
+	if(ret < 0){
+		stop = 1;
+		printf("send message error\n");
+	}
+	
 	while (!stop)
 	{
 		int ret = simple_websocket_recv(sws);
@@ -46,15 +58,8 @@ int main(){
 			printf("recv mssage error\n");
 			continue;
 		}
-		ret = my_send_function(sws);
-		if(ret < 0){
-			stop = 1;
-			printf("send message error\n");
-			continue;
-		}
 	}
 	
-	done:
 	simple_websocket_destroy(sws);
 	return 0;
 }
