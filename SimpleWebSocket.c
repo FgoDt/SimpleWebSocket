@@ -20,21 +20,6 @@ static const char* handshake_request_fmt_str =
 #define WS_MAX_HEADER_LEN 10
 
 
-enum SimpleWebSocketFrameStage{
-    SWS_FRAME_STAGE_RECV_HEADER,
-    SWS_FRAME_STAGE_PARSE_HEADER,
-    SWS_FRAME_STAGE_RECV_EXTRA_LEN,
-    SWS_FRAME_STAGE_PARSE_EXTRA_LEN,
-    SWS_FRAME_STAGE_RECV_MASK,
-    SWS_FRAME_STAGE_PARSE_MASK,
-    SWS_FRAME_STAGE_RECV_PAYLOAD,
-    SWS_FRAME_STAGE_PARSE_PAYLOAD,
-    SWS_FRAME_STAGE_SEND_HEADER,
-    SWS_FRAME_STAGE_SEND_MASK,
-    SWS_FRAME_STAGE_SEND_PAYLOAD,
-    SWS_FRAME_STAGE_DONE,
-};
-
 struct SimpleWebSocketFrame{
     uint8_t FIN;
     uint8_t opcode;
@@ -759,7 +744,7 @@ int simple_websocket_connect(SimpleWebSocket *sws,
         SSL_library_init();
         SSLeay_add_ssl_algorithms();
         SSL_load_error_strings();
-        const SSL_METHOD *method = DTLS_client_method();
+        const SSL_METHOD *method = TLS_client_method();
         sws->ssl_ctx = SSL_CTX_new(method);
         sws->ssl = SSL_new(sws->ssl_ctx);
         if(!sws->ssl){
@@ -772,7 +757,12 @@ int simple_websocket_connect(SimpleWebSocket *sws,
         int err = SSL_connect(sws->ssl);
         if(err <= 0){
             printf("sws error ssl connect\n");
-            //log_ssl();
+            err = SSL_get_error(sws->ssl, err);
+            if(err == SSL_ERROR_SSL){
+                printf("sslerror1: %s\n",ERR_error_string(ERR_get_error(), NULL));
+            }
+            printf("sslerror2:%s\n",SSL_state_string(sws->ssl));
+           
             fflush(stdout);
             goto fail;
         }
@@ -782,8 +772,8 @@ int simple_websocket_connect(SimpleWebSocket *sws,
 
 fail:
     sws_socket_close(sws->fd);
-    sws->fd = INVALID_SOCKET;
-    return INVALID_SOCKET;
+    sws->fd = SWS_INVALID_SOCKET;
+    return SWS_INVALID_SOCKET;
 }
 
 int simple_websocket_recv(SimpleWebSocket *sws)

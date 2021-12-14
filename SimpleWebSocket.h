@@ -26,7 +26,7 @@
 #include <fcntl.h>
 #define sws_time sws_linux_time
 #define sws_socket int
-#define INVALID_SOCKET -1
+#define SWS_INVALID_SOCKET -1
 #define SWSEWOULDBLOCK EWOULDBLOCK
 #define SWSESHUTDOWN ESHUTDOWN
 #define SWSENOTCONN ENOTCONN
@@ -42,15 +42,7 @@
 
 typedef struct SimpleWebSocket SimpleWebSocket;
 
-typedef enum SimpleWebSocketDataType SimpleWebSocketDataType;
-
-typedef enum SimpleWebSocketState SimpleWebSocketState;
-
-typedef enum SimpleWebSocketType SimpleWebSocketType;
-
 typedef struct SimpleWebSocketFrame SimpleWebSocketFrame;
-
-typedef enum SimpleWebSocketFrameStage SimpleWebSocketFrameStage;
 
 typedef struct SimpleWebSocketIO
 {
@@ -79,6 +71,32 @@ enum SimpleWebSocketType{
     SWS_TYPE_SERVER,
     SWS_TYPE_CLIENT
 };
+
+enum SimpleWebSocketFrameStage{
+    SWS_FRAME_STAGE_RECV_HEADER,
+    SWS_FRAME_STAGE_PARSE_HEADER,
+    SWS_FRAME_STAGE_RECV_EXTRA_LEN,
+    SWS_FRAME_STAGE_PARSE_EXTRA_LEN,
+    SWS_FRAME_STAGE_RECV_MASK,
+    SWS_FRAME_STAGE_PARSE_MASK,
+    SWS_FRAME_STAGE_RECV_PAYLOAD,
+    SWS_FRAME_STAGE_PARSE_PAYLOAD,
+    SWS_FRAME_STAGE_SEND_HEADER,
+    SWS_FRAME_STAGE_SEND_MASK,
+    SWS_FRAME_STAGE_SEND_PAYLOAD,
+    SWS_FRAME_STAGE_DONE,
+};
+
+typedef enum SimpleWebSocketFrameStage SimpleWebSocketFrameStage;
+
+
+typedef enum SimpleWebSocketDataType SimpleWebSocketDataType;
+
+typedef enum SimpleWebSocketState SimpleWebSocketState;
+
+typedef enum SimpleWebSocketType SimpleWebSocketType;
+
+
 
 
 struct SimpleWebSocket{

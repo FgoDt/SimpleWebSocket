@@ -22,13 +22,13 @@ static int my_send_function(SimpleWebSocket *sws){
 int main(){
 	SimpleWebSocket *sws = simple_websocket_create(SWS_TYPE_CLIENT);
 	sws->io.message = sws_client_dummy_io_msg_call;
-	sws_socket fd = simple_websocket_connect(sws, "rtc.studease.cn", 443, 0 );
-	if(fd == INVALID_SOCKET){
+	sws_socket fd = simple_websocket_connect(sws, "rtc.studease.cn", 443, 1 );
+	if(fd == SWS_INVALID_SOCKET){
 		printf("connect error\n");
 		goto done;
 	}
 
-	int ret = simple_websocket_request_handshake(sws, "wss://rtc.studease.cn/rtc/sig", 
+	int ret = simple_websocket_request_handshake(sws, "/rtc/sig", 
 							"", "rtc.studease.cn", 13);
 	
 	if(ret < 0){
