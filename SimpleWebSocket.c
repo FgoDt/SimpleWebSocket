@@ -255,7 +255,6 @@ static int sws_client_do_handshake(SimpleWebSocket *sws)
     buf[cal_str_len] = 0;
     memcpy(buf, sws->sec_ws_key, strlen(sws->sec_ws_key));
     memcpy(buf+strlen(sws->sec_ws_key),ws_magic_str, strlen(ws_magic_str));
-    printf("cal str:%s\n",buf);
     sws_cal_sha1_then_base64(&sws->sec_ws_accept, sws->sec_ws_key);
     free(buf);
     sws_client_get_handshake_response(sws);
@@ -841,6 +840,35 @@ int simple_websocket_request_handshake(SimpleWebSocket *sws ,
     memset(data, 0, msg_total_len);
     int ret = sprintf(data, handshake_request_fmt_str, path, host, 
                         sws->sec_ws_key,ws_version,extra_header);
-    sws->io.send(sws, data, ret, 0);
-    return -1;
+    return sws->io.send(sws, data, ret, 0);
+}
+
+void simple_websocket_destroy(SimpleWebSocket *sws)
+{
+    assert(sws != NULL);
+    if(sws->r_frame){
+        sws_frame_free(sws->r_frame);
+    }
+    if(sws->s_frame){
+        sws_frame_free(sws->s_frame);
+    }
+    if(sws->sec_ws_accept){
+        free(sws->sec_ws_accept);
+    }
+    if(sws->sec_ws_key){
+        free(sws->sec_ws_key);
+    }
+    if(sws->remote_sec_ws_accept){
+        free(sws->remote_sec_ws_accept);
+    }
+    if(sws->use_ssl == 1){
+        if(sws->ssl){
+            SSL_clear(sws->ssl);
+            SSL_free(sws->ssl);
+        }
+        if(sws->ssl_ctx){
+            SSL_CTX_free(sws->ssl_ctx);
+        }
+    }
+    free(sws);
 }
