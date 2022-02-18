@@ -324,6 +324,9 @@ static int sws_recv_frame_mask(SimpleWebSocket* sws,
 static int sws_recv_frame_payload(SimpleWebSocket *sws,
                                         SimpleWebSocketFrame *frame)
 {
+  if (frame->payload_len == 0) {
+    return 0;
+  }
     if(frame->payload == NULL)
     {
         frame->payload = malloc(frame->payload_len);
@@ -455,15 +458,20 @@ static int sws_get_piple_line(SimpleWebSocket *sws)
             break;
         case SWS_FRAME_STAGE_RECV_PAYLOAD:
         {
+          if (frame->payload_len == 0) {
+            frame->rw_loc = 0;
+            frame->stage++;
+          } else {
             ret = sws_recv_frame_payload(sws, frame);
-            if(ret <= 0){
-                return ret;
+            if (ret <= 0) {
+              return ret;
             }
-            if(frame->rw_loc < frame->payload_len){
-                return ret;
+            if (frame->rw_loc < frame->payload_len) {
+              return ret;
             }
             frame->rw_loc = 0;
             frame->stage++;
+          }
         }
             break;
         case SWS_FRAME_STAGE_PARSE_PAYLOAD:
@@ -714,7 +722,7 @@ SimpleWebSocket* simple_websocket_create(SimpleWebSocketType type)
     return sws;
 }
 
-int simple_websocket_connect(SimpleWebSocket *sws, 
+sws_socket simple_websocket_connect(SimpleWebSocket *sws, 
                             const char* host, 
                             int port, int ssl)
 {

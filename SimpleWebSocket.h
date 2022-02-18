@@ -16,6 +16,7 @@
 #define SWSESHUTDOWN WSAESHUTDOWN
 #define SWSENOTCONN WSAENOTCONN
 #define SWSGetLastError() WSAGetLastError()
+#define SWS_INVALID_SOCKET INVALID_SOCKET
 #else
 #include <sys/types.h>
 #include <sys/socket.h>
